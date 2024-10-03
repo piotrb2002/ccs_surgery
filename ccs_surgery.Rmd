@@ -1,0 +1,243 @@
+---
+title: "Clear cell sarcoma - surgical treatment"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+author: 'Piotr Błoński'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    toc_depth: 2
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r echo=FALSE, cache=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+opts_chunk$set(
+  echo = FALSE,
+  cache = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+# 
+```
+
+
+```{r setup}
+library(survival)
+library(lubridate)
+library(ggsurvfit)
+library(gtsummary)
+library(tidycmprsk)
+library(dplyr)
+library(stringi)
+library(purrr)
+library(xddd)
+library(survminer)
+library(swimplot)
+
+db <- read.csv("C:/Users/pbpol/OneDrive/Dokumenty/NIO/robocze/medstat/data/epsarc.csv",
+               header = TRUE, sep = ',')
+db <- db[which(db$x==2),]
+db[db %in% c(99,999,9999)] <- NA
+
+db <- data.frame(
+  x = as.numeric(db$x),
+  PID = as.numeric(db$PID),
+  BIRTH = db$birth_date,
+  SEX = as.numeric(db$sex),
+  DIAG = db$diag_date,
+  DEAD = as.numeric(db$dead_tf),
+  DEATH_DATE = db$death_date,
+  MARGIN = db$col85,
+  R0 = as.numeric(db$col85 == 0),
+  SITE = as.numeric(db$col34),
+  PRESENTATION = as.character(db$col48),
+  DIAG = db$diag_date,
+  INITIAL_SURG = db$surg_prim_date,
+  relapse_initial_tf = as.numeric(db$relapse_tf),
+  relapse_initial_date = db$relapse_date,
+  initial_R = db$surg_prim_R,
+  ok = db$col46,
+  surg_prim_nio = db$surg_prim_nio,
+  SIZE_PRIM = as.numeric(db$col37.1),
+  SIZE_REC = as.numeric(db$col36.3),
+  TNM_N = as.numeric(db$col45),
+  TNM_M = as.numeric(db$col46),
+  PERIOPERATIVE_REGIMEN = as.numeric(db$col51))
+
+db_surg <- read.csv("C:/Users/pbpol/OneDrive/Dokumenty/NIO/robocze/medstat/data/ccs_surg.csv",
+                    header = TRUE, sep = ',')
+
+db <- merge(db_surg, db, by='PID', all.x=T, all.y=F)
+db <- db[which(db$ok == 0),]
+db <- db[which(!duplicated(db$PID)),]
+# db <- db[which(!(db$surgery_type2)%in%c('scar excision + SLNB', 'scar excision')),]
+
+db <- db %>% mutate(
+  relapse_date = ifelse(relapse_tf, relapse_date, DEATH_DATE),
+  relapse_tf = ifelse(relapse_tf, 1, DEAD),
+  relapse_initial_date = ifelse(relapse_initial_tf, relapse_initial_date, DEATH_DATE),
+  relapse_initial_tf = ifelse(relapse_initial_tf, 1, DEAD),
+  initial_R0 = as.numeric(initial_R==0),
+  OS_MONTHS = as.duration(surgery_date %--% DEATH_DATE)/dmonths(1),
+  RFS_MONTHS = as.duration(surgery_date %--% relapse_date)/dmonths(1),
+  AGE = round(as.duration(BIRTH %--% surgery_date)/dyears(1),0),
+  OS_SINCE_DIAG_MONTHS = as.duration(DIAG %--% DEATH_DATE)/dmonths(1),
+  RFS_INITIAL_MONTHS = as.duration(INITIAL_SURG %--% relapse_initial_date)/dmonths(1),
+  OS_INITIAL_MONTHS = as.duration(INITIAL_SURG %--% DEATH_DATE)/dmonths(1),
+  TUMOR_SIZE = ifelse(as.numeric(surg_prim_nio), SIZE_PRIM, SIZE_REC),
+  relapse_pattern = ifelse(((relapse_pattern=='No recurrence')&(DEAD==1)), 'Death without relapse', relapse_pattern),
+  trt_type = recode(surg_prim_nio, '0'='Recurrence/Scar excision', '1'='Primary tumor')
+)
+
+db <- cbind(data.frame(ID=paste(rep('ID_', times=nrow(db)), 1:nrow(db)),sep=''), db)
+
+
+ccs_rfs <- survfit2(Surv(RFS_MONTHS, relapse_tf)~1, data=db)
+ccs_rfs_initial <- survfit2(Surv(RFS_INITIAL_MONTHS, relapse_initial_tf)~1, data=db)
+ccs_os <- survfit2(Surv(OS_MONTHS, DEAD)~1, data=db)
+ccs_os_since_diag <- survfit2(Surv(OS_SINCE_DIAG_MONTHS, DEAD)~1, data=db)
+
+plt_rfs <- prettyplot_for_one(ccs_rfs, survivaltitle=c('Relapse-free', 'RFS'),
+                              plotxlab='Years since the surgery in NIO', x_intervals = 60,
+                              survivaltitle_suffix = 'since the NIO surgery',
+                              plotcol = 'black',vertlines = c(24, 60),x_max = 12*20,
+                              annotateshift = 60)
+plt_os <- prettyplot_for_one(ccs_os, survivaltitle=c('Overall', 'OS'),
+                              plotxlab='Years since the surgery', x_intervals = 60,
+                              plotcol = '#5d28fc',vertlines = c(24, 60),x_max = 12*20,
+                              annotateshift = 60, survivaltitle_suffix = 'since the NIO surgery')
+
+plt_nio_rfs <- pretty_plot_for2(db$RFS_MONTHS, db$relapse_tf, db$surg_prim_nio,
+                              curve1name = 'For the recurrent tumor/Scar radicalization',
+                              curve2name = 'For the primary disease',
+                              survivaltitle = c('Relapse-free', 'RFS'),
+                              plotxlab = 'Years since the surgery',
+                              legend_tit = 'Reason for the \n surgery at NIO:',
+                              x_max = 12*15, x_intervals = 60,curve1col = 'orange',
+                              curve2col = 'grey', add_pvalue = FALSE,
+                              survivaltitle_suffix = 'since the NIO surgery')
+plt_nio_os <- pretty_plot_for2(db$OS_MONTHS, db$DEAD, db$surg_prim_nio,
+                              curve1name = 'For the recurrent tumor/Scar radicalization',
+                              curve2name = 'For the primary disease',
+                              survivaltitle = c('Overall', 'OS'),
+                              plotxlab = 'Years since the surgery',
+                              legend_tit = 'Reason for the \n surgery at NIO:',
+                              x_max = 12*15, x_intervals = 60, curve1col = 'purple',
+                              curve2col = 'black', add_pvalue = FALSE,
+                              survivaltitle_suffix = 'since the NIO surgery')
+plt_nio_os_initial <- pretty_plot_for2(db$OS_INITIAL_MONTHS, db$DEAD, db$surg_prim_nio,
+                              curve1name = 'For the recurrent tumor/Scar radicalization',
+                              curve2name = 'For the primary disease',
+                              survivaltitle = c('Overall', 'OS'),
+                              plotxlab = 'Years since the surgery',
+                              legend_tit = 'Reason for the \n surgery at NIO:',
+                              x_max = 12*15, x_intervals = 60, curve1col = 'khaki',
+                              curve2col = 'darkblue', add_pvalue = FALSE,
+                              survivaltitle_suffix = 'since the initial surgery')
+
+dbswim <- db[,c('ID', 'RFS_MONTHS', 'relapse_pattern', 'surg_prim_nio', 'OS_MONTHS', 'DEAD')]
+dbswim <- dbswim %>% mutate(
+  surg_prim_nio = recode(surg_prim_nio, '0'='Recurrent tumor/Scar radicalization','1' = 'Primary tumor'),
+  DEAD = recode(DEAD, '0'='Censored', '1'='Death'),
+  OS_MONTHS = OS_MONTHS*dmonths(1)/dyears(1),
+  RFS_MONTHS = RFS_MONTHS*dmonths(1)/dyears(1)
+)
+dbswim <- dbswim %>% rename('Relapse_pattern'='relapse_pattern', 'Status'='DEAD')
+
+  
+swim_plt<- swimmer_plot_piotra(dbswim, id='ID', end = 'RFS_MONTHS', name_fill = 'Relapse_pattern', stratify =  'surg_prim_nio',legend.title = element_text('Pattern of recurrence'))+
+  swimmer_points(dbswim, id='ID', time = 'OS_MONTHS', name_shape = 'Status')+
+  swimmer_lines(dbswim, id = 'ID', start = 'RFS_MONTHS', end = 'OS_MONTHS')+
+  scale_y_continuous(name = 'Years since the surgery', breaks = seq(0, 18, by=3))
+```
+
+# Baseline characteristics {-}
+
+```{r table1}
+table1 <- rbind(tb(rep('', nrow(db)), 'Total number of patients'),
+                tb(recode(db$SEX,'1'='Female','2'='Male'), 'Sex'),
+                tbcon(db$AGE, 'Age [years]'),
+                tb(recode(db$SITE,'1'='Back','2'='Chest','3'='Arm','4'='Forearm','5'='Tigh','6'='Lower leg','7'='Head & Neck','8'='Palm/feet','9'='Pelvis','10'='Abdomen','11'='Uterus'), 'Tumor site'),
+                tb(recode(db$PRESENTATION,'0'='Primary tumor before biopsy','1'='Primary tumor after biopsy','2'='Scar after primary excision','3'='Recurrent tumor','4'='Nodal metastases (Only)','5'='Distant metastases','7'='Recurrent tumor'),'Patient status'),
+                tb(recode(db$TNM_N, '1'='Yes', '0'='No'), 'Involvement of lymph nodes (at admission)'),
+                tb(recode(db$TNM_M, '1'='Yes', '0'='No'), 'Distant metastases (at admission)')
+                
+)
+colnames(table1) <- c('variable', 'n (%)')
+kable(table1, row.names = FALSE)
+```
+
+# Types of surgery {-}
+
+```{r}
+table2 <- tb(db$surgery_type2, 'Type of surgery at NIO')
+colnames(table2) <- c('', 'n (%)')
+kable(table2, row.names = F)
+```
+
+# Peri-operative treatment {-}
+
+```{r tabl3}
+tab3 <- rbind(
+  tb(recode(db$PERIOPERATIVE_REGIMEN, '0'= 'Surgery only',
+'1'= 'CHTH - surgery',
+'2'= 'RTH - surgery',
+'3'= 'CHTH + RTH - surgery',
+'4'= 'Surgery - CHTH',
+'5'= 'Surgery - RTH',
+'6'= 'Surgery - RTH - CHTH',
+'7'= 'RTH - surgery - RTH',
+'8'= 'RTH + CHTH - surgery - CHTH',
+'9'= 'RTH + CHTH - surgery - RTH',
+'10'= 'CHTH - surgery - CHTH',
+'11'= 'RTH - surgery - CTH',
+'12'= 'palliative'), 'Perioperative treatment modalities')
+)
+colnames(tab3) <- c('', 'n (%)')
+kable(tab3, row.names = FALSE)
+```
+
+# Swimmer plot {-}
+
+
+The RFS since the surgery is represented by the thick bars, whereas the thin lines show the survival after the relapse. The patients have been split into groups: treated for the primary tumor (upper box) or for recurrent tumor/scar radicalization after resection with inadequate margins (lower box).
+
+```{r, fig.asp=0.55, fig.width=9}
+swim_plt
+```
+
+# Survival since the surgery at NIO {-}
+
+The median relapse-free survival (RFS) since the surgery at NIO was `r surv_median(ccs_rfs)$median %>% round(1)` months (95% CI: `r surv_median(ccs_rfs)$lower %>% round(1)` - `r surv_median(ccs_rfs)$upper %>% round(1)`) for all patients. 
+
+The median overall survival since the surgery at NIO was `r surv_median(ccs_os)$median %>% round(1)` months (`r surv_median(ccs_os)$lower %>% round(1)` - `r surv_median(ccs_os)$upper %>% round(1)`) for all patients. 
+
+```{r, fig.asp=0.55}
+plt_rfs
+plt_os
+```
+
+
+# Treatment at NIO for the primary disease vs for recurrent/incompletely resected {-}
+
+```{r}
+primary <- sum(db$surgery_type2 %in% c('primary tumor resection', 'primary tumor resection + TLND', 'primary tumor resection + SLNB'))
+recurrent <- sum(db$surgery_type2 %in% c('local recurrence resection', 'local recurrence resection + TLND', 'local recurrence resection + SLNB', 'electrochemotherapy'))
+radicalization <- sum(db$surgery_type2 %in% c('scar excision', 'scar excision + SLNB'))
+```
+
+Out of `r nrow(db)` patients who underwent the curative-intent surgery for clear-cell sarcoma, `r primary` patients (`r round(100*primary/nrow(db),1)`%) were treated for the primary disease, another `r recurrent` (`r round(100*recurrent/nrow(db),)`%) were treated for recurrent disease (relapse after primary treatment in regional center) and in `r radicalization` (`r round(100*radicalization/nrow(db),)`%) patients, there was performed a radicalization of a scar after the preceding resection with inadequate margins in the regional center.
+
+
+
+```{r, fig.asp=0.55}
+plt_nio_rfs
+plt_nio_os
+plt_nio_os_initial
+```
+
